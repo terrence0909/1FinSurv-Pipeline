@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Realistic wallet addresses (simulating SWIFT-connected banks)
+# Realistic wallet addresses
 BANK_WALLETS = {
     'HSBC': '0x95222290DD7278Aa3Ddd389Cc1E1d165CC4BAfe5',
     'UBS': '0x281055afc982d96fab65b3a49cac8b878184cb16',
@@ -37,16 +37,31 @@ def generate_transaction(date_override=None):
     """Generate a realistic blockchain transaction"""
     bank = random.choice(list(BANK_WALLETS.keys()))
     bop_code = random.choice(list(BOP_CODES.keys()))
-    
-    # Amount varies by BOP category
-    if bop_code.startswith('1') or bop_code.startswith('2'):  # Trade
-        amount = round(random.uniform(10000, 500000), 2)
-    elif bop_code.startswith('5'):  # Transfers
-        amount = round(random.uniform(1000, 50000), 2)
-    else:  # Income
-        amount = round(random.uniform(500, 10000), 2)
-    
     currency = random.choice(CURRENCIES)
+    
+    # Base amount by BOP category
+    if bop_code.startswith('1') or bop_code.startswith('2'):  # Trade
+        base_amount = round(random.uniform(10000, 500000), 2)
+    elif bop_code.startswith('5'):  # Transfers
+        base_amount = round(random.uniform(1000, 50000), 2)
+    else:  # Income
+        base_amount = round(random.uniform(500, 10000), 2)
+    
+    # Randomly create transactions that exceed allowance (15% chance)
+    if random.random() < 0.15:  # 15% chance of exceeding allowance
+        if currency == 'ZAR':
+            amount = round(random.uniform(800000, 1500000), 2)  # Exceeds R1M
+        else:
+            # For foreign currency, amount that exceeds R1M
+            zar_equivalent = base_amount * EXCHANGE_RATES.get(currency, 1.0)
+            if zar_equivalent < 1000000:
+                # Scale up to exceed R1M
+                scale_factor = 1000000 / zar_equivalent * random.uniform(1.1, 1.5)
+                amount = round(base_amount * scale_factor, 2)
+            else:
+                amount = base_amount
+    else:
+        amount = base_amount
     
     return {
         'swift_uetr': str(uuid.uuid4()),
@@ -62,10 +77,12 @@ def generate_transaction(date_override=None):
         'value_date': date_override if date_override else (datetime.now() - timedelta(days=random.randint(0, 90))),
         'bop_code': bop_code,
         'allowance_type': random.choice(ALLOWANCE_TYPES),
-        'bank': bank
+        'bank': bank,
+        'data_source': 'mock'
     }
 
 def insert_transaction(conn, tx):
+    """Insert a transaction into the database"""
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO tx_blockchain_payments (
@@ -73,22 +90,24 @@ def insert_transaction(conn, tx):
             wallet_address_originator, wallet_address_beneficiary,
             originator_kyc_id_hash, beneficiary_kyc_id_hash,
             amount, currency_code, exchange_rate_zar, value_date,
-            bop_code, allowance_type
+            bop_code, allowance_type, data_source
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
         ) RETURNING tx_id
     """, (
         tx['swift_uetr'], tx['ledger_tx_hash'], tx['block_number'],
         tx['wallet_address_originator'], tx['wallet_address_beneficiary'],
         tx['originator_kyc_id_hash'], tx['beneficiary_kyc_id_hash'],
         tx['amount'], tx['currency_code'], tx['exchange_rate_zar'],
-        tx['value_date'], tx['bop_code'], tx['allowance_type']
+        tx['value_date'], tx['bop_code'], tx['allowance_type'],
+        tx['data_source']
     ))
     tx_id = cur.fetchone()[0]
     conn.commit()
     return tx_id
 
 def validate_transaction(conn, tx_id):
+    """Validate the transaction"""
     cur = conn.cursor()
     
     cur.execute("""
@@ -138,7 +157,6 @@ def generate_historical_data(conn, days=90, transactions_per_day=5):
     current_date = datetime.now() - timedelta(days=days)
     
     while current_date <= datetime.now():
-        # Generate 2-8 transactions per day
         num_tx = random.randint(2, 8)
         for _ in range(num_tx):
             tx = generate_transaction(current_date)
@@ -146,7 +164,6 @@ def generate_historical_data(conn, days=90, transactions_per_day=5):
             status = validate_transaction(conn, tx_id)
             total_created += 1
         
-        # Show progress
         if total_created % 50 == 0:
             print(f"  Generated {total_created} transactions so far...")
         
@@ -155,6 +172,7 @@ def generate_historical_data(conn, days=90, transactions_per_day=5):
     return total_created
 
 def clear_old_data(conn):
+    """Clear existing data for fresh start"""
     cur = conn.cursor()
     cur.execute("DELETE FROM tx_finsurv_validation CASCADE;")
     cur.execute("DELETE FROM tx_blockchain_payments CASCADE;")
@@ -173,16 +191,12 @@ if __name__ == "__main__":
             port=5432
         )
         
-        # Clear existing data for fresh start
         clear_old_data(conn)
-        
-        # Generate 90 days of historical data
         total = generate_historical_data(conn, days=90)
         
         print(f"\nSummary:")
         print(f"  Total transactions generated: {total}")
         
-        # Show breakdown
         cur = conn.cursor()
         cur.execute("""
             SELECT 
@@ -193,6 +207,7 @@ if __name__ == "__main__":
         """)
         total, passed, failed = cur.fetchone()
         print(f"  Passed: {passed}, Failed: {failed}")
+        print(f"  Pass rate: {(passed/total*100):.1f}%")
         
         cur.execute("""
             SELECT currency_code, COUNT(*), SUM(amount) 
