@@ -26,3 +26,6 @@ venv/
 legacy/logs/
 logs/
 dbt/profiles.yml
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
