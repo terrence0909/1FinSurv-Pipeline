@@ -1,129 +1,156 @@
-# SARB FinSurv Blockchain Compliance Pipeline
+# FinSurv Lakehouse — Real-Time Cross-Border Compliance on Azure
 
-> Automated cross-border payment reporting for South African banks — from raw SWIFT data to SARB submission, validated and monitored in real time.
-
----
-
-## Dashboard
-
-![SARB FinSurv Dashboard](images/dashboard.png)
+> A streaming lakehouse that ingests SARB FinSurv cross-border payment feeds, validates them against Exchange Control rules in real time, and produces audit-ready compliance data — built on Azure Databricks, Delta Lake, and dbt.
 
 ---
 
 ## Why this exists
 
-South African banks are legally required to report every cross-border payment to the South African Reserve Bank's Financial Surveillance (FinSurv) department **within 24 hours** of settlement. Manual reporting breaks under volume — transactions slip through, BOP category codes get misclassified, and the R1 000 000 individual annual allowance is easy to breach without automated tracking.
+South African banks must report every cross-border payment to the SARB Financial Surveillance (FinSurv) department **within 24 hours** of settlement. Missing the window, misclassifying a BOP code, or breaching the R1,000,000 Annual Discretionary Allowance carries regulatory consequences.
 
-This pipeline eliminates that risk. It ingests SWIFT-format blockchain payment records, validates each transaction against current FinSurv rules, and surfaces exceptions before the reporting window closes.
+The original pipeline (see `legacy/`) proved the compliance logic works — 430 transactions, 79% pass rate, validated against ADA limits, BOP codes, and currency eligibility. But it had architectural limits:
 
----
+- **Batch-only.** A daily Airflow DAG cannot alert on a breach that happens at 10:00 if the next run is at 23:00.
+- **No quarantine.** Failed transactions were flagged but not traceable. Auditors could not see *why* a record failed.
+- **No lakehouse.** PostgreSQL stored results, but there was no Bronze/Silver/Gold separation, no Delta Lake, no dbt.
+- **No cloud-native stack.** No Event Hubs, no ADLS Gen2, no Unity Catalog.
 
-## What it does
-
-| Stage | What happens |
-|---|---|
-| **Generate** | Synthetic SWIFT payment records with realistic wallet addresses, currencies, and BOP categories |
-| **Validate** | Each transaction is checked against SARB rules — annual allowance limits, currency eligibility, BOP category codes |
-| **Store** | Results written to PostgreSQL with `PASSED` / `FAILED` status and failure reason |
-| **Monitor** | Streamlit dashboard shows pass rates, breach patterns, and currency exposure in real time |
-| **Schedule** | Airflow DAG runs daily, aligning with the 24-hour FinSurv reporting cycle |
+This repository is the rebuild. Same domain. Same rules. Modern architecture.
 
 ---
 
 ## Architecture
-
-```
-SWIFT Payment Data
-       │
-       ▼
 ┌─────────────────────┐
-│  generate_          │  Python — realistic wallet addresses,
-│  transactions.py    │  5 currencies, 8 BOP categories
+│ SWIFT Producer │ Simulates real-time cross-border payments
+│ (Kafka protocol) │
 └────────┬────────────┘
-         │
-         ▼
+│
+▼
 ┌─────────────────────┐
-│  Validation Engine  │  R1M annual allowance checks,
-│                     │  currency rules, BOP code mapping
+│ Azure Event Hubs │ Kafka-compatible streaming endpoint
 └────────┬────────────┘
-         │
-         ▼
+│
+▼
 ┌─────────────────────┐
-│  PostgreSQL 15      │  Transactions + validation results
-│  (Docker)           │  PASSED / FAILED / failure_reason
+│ Bronze (Delta) │ Raw append-only ingest via Spark Structured Streaming
+│ finsurv_raw │
 └────────┬────────────┘
-         │
-         ▼
-┌─────────────────────┐     ┌─────────────────────┐
-│  Streamlit          │     │  Apache Airflow      │
-│  Dashboard          │     │  (daily DAG)         │
-└─────────────────────┘     └─────────────────────┘
-```
+│
+▼
+┌─────────────────────┐ ┌─────────────────────┐
+│ Silver (Delta) │ │ Quarantine (Delta) │
+│ finsurv_validated │────▶│ failed_records │
+│ │ │ + failure_reason │
+└────────┬────────────┘ └─────────────────────┘
+│
+▼
+┌─────────────────────┐
+│ Gold (dbt models) │ fct_compliance_events, dim_currency, dim_bop
+│ Analytics-ready │
+└────────┬────────────┘
+│
+▼
+┌─────────────────────┐
+│ Databricks SQL │ Real-time compliance dashboard
+└─────────────────────┘
 
----
-
-## Current dataset
-
-- **430+** historical transactions loaded
-- **79%** compliance pass rate
-- **5** currencies tracked (ZAR, USD, EUR, GBP, CNY)
-- **8** BOP categories covering the most common cross-border payment types
-
----
-
-## Tech stack
-
-| Layer | Tool |
-|---|---|
-| Containerisation | Docker & Docker Compose |
-| Database | PostgreSQL 15 |
-| Data generation & validation | Python 3.9+ |
-| Orchestration | Apache Airflow |
-| Dashboard | Streamlit + Plotly |
-
----
-
-## Quick start
-
-**Prerequisites:** Docker, Python 3.9+
-
-```bash
-# 1. Start the database
-docker-compose up -d
-
-# 2. Generate transaction data
-python scripts/generate_transactions.py
-
-# 3. Launch the dashboard
-streamlit run dashboard_app.py
-```
-
-The dashboard will be available at `http://localhost:8501`.
+text
 
 ---
 
 ## Compliance rules implemented
 
-- **Annual Discretionary Allowance (ADA):** Individuals may not transfer more than R1 000 000 offshore per calendar year without SARB approval. Transactions that push a sender over this threshold are flagged `FAILED`.
-- **BOP category validation:** Each transaction must carry a valid Balance of Payments category code. Unrecognised or mismatched codes are rejected.
-- **Currency eligibility:** Only SARB-approved currencies are accepted for FinSurv reporting.
+| Rule | Description | Enforcement |
+|---|---|---|
+| **Annual Discretionary Allowance (ADA)** | Individuals cannot transfer > R1,000,000 offshore per calendar year | Silver layer — cumulative check per sender |
+| **BOP category validation** | Every transaction must carry a valid Balance of Payments code | Silver layer — schema + referential check |
+| **Currency eligibility** | Only SARB-approved currencies accepted | Silver layer — lookup against approved list |
 
-> **Note:** This pipeline implements common FinSurv validation rules for demonstration purposes. Production deployments should be reviewed against the current SARB Exchange Control Manual.
+Records that fail any rule are routed to the **quarantine Delta table** with the specific failure reason, timestamp, and source message. Nothing is silently dropped.
 
 ---
 
-## Project context
+## Tech stack
 
-This project is part of **Project ZAR** — a broader banking compliance platform built to demonstrate end-to-end data engineering on financial regulatory workloads.
+| Layer | v1 (Legacy) | v2 (Current) |
+|---|---|---|
+| Ingestion | Python script | Azure Event Hubs (Kafka protocol) |
+| Storage | PostgreSQL 15 | Azure Data Lake Storage Gen2 (Delta Lake) |
+| Processing | Python validation | Databricks + Spark Structured Streaming |
+| Transformation | Python scripts | dbt-databricks |
+| Orchestration | Apache Airflow | Databricks Workflows |
+| Serving | Streamlit | Databricks SQL Dashboard |
+| IaC | Docker Compose | Terraform |
+| CI | None | GitHub Actions |
 
-Related work: ArtBurst (serverless auction platform) · NBA Data Lake 
+---
+
+## Repository structure
+.
+├── legacy/ # v1 — Airflow + Postgres (preserved for comparison)
+├── infra/
+│ ├── terraform/ # Azure resources: Event Hubs, ADLS, Databricks, Unity Catalog
+│ └── databricks/ # Cluster config, workflow definitions
+├── src/
+│ ├── producers/ # Kafka producer simulating SWIFT messages
+│ ├── bronze/ # Event Hubs → Delta ingest
+│ └── silver/ # Validation + quarantine routing
+├── dbt/
+│ ├── models/
+│ │ ├── staging/ # stg_finsurv_transactions
+│ │ ├── marts/ # fct_compliance_events, dim_currency, dim_bop_category
+│ │ └── quarantine/ # quarantine_summary
+│ └── tests/ # dbt tests for ADA limits, BOP codes
+├── docs/
+│ ├── architecture.md # Detailed medallion design
+│ ├── azure_setup.md # Provisioning guide
+│ └── migration_notes.md # What changed from v1 → v2 and why
+└── .github/workflows/ # CI: lint, dbt parse, pytest
+
+text
+
+---
+
+## Migration notes (v1 → v2)
+
+**What stayed the same:**
+- Domain logic: ADA limits, BOP codes, currency eligibility
+- Business narrative: SARB 24-hour reporting window
+- Data model concepts: transactions, senders, currencies, BOP categories
+
+**What changed and why:**
+- **Airflow → Databricks Workflows:** Native integration with Delta Lake and Unity Catalog, less orchestration glue.
+- **Postgres → Delta Lake:** ACID transactions on the data lake, time travel for audits, schema evolution without migrations.
+- **Python validation → dbt tests + quarantine layer:** Validation logic is version-controlled SQL, and failures are traceable rather than silent.
+- **Batch DAG → Structured Streaming:** Real-time breach detection within the 24-hour window, not the next day.
+- **Docker Compose → Terraform:** Reproducible Azure infrastructure as code.
+
+---
+
+## What I learned (to be filled in during build)
+
+> _This section will be updated as the build progresses. Follow the commit history to see the journey._
 
 ---
 
 ## Roadmap
 
-- [ ] SARB FinSurv API integration for direct submission
-- [ ] Real-time SWIFT message ingestion via Kafka
-- [ ] Expanded BOP category coverage
-- [ ] Email/Slack alerts on compliance threshold breaches
-- [ ] Audit log for regulatory review
+- [ ] Deploy Event Hubs + ADLS via Terraform
+- [ ] Configure Unity Catalog external location for Bronze/Silver/Gold
+- [ ] Run Spark Structured Streaming job end-to-end
+- [ ] Deploy dbt models as Databricks Workflow
+- [ ] Build Databricks SQL compliance dashboard
+- [ ] Configure GitHub Actions CI
+
+---
+
+## Related work
+
+- **Project ZAR** — broader banking compliance platform
+- **ArtBurst** — serverless real-time auction platform (AWS)
+
+---
+
+## Note
+
+This pipeline implements common FinSurv validation rules for demonstration. Production deployments must be reviewed against the current SARB Exchange Control Manual.
