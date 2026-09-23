@@ -22,3 +22,5 @@ Thumbs.db
 # Secrets
 *.key
 *.pem
+venv/
+legacy/logs/
