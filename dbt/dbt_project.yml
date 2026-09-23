@@ -1,0 +1,27 @@
+name: 'finsurv'
+version: '1.0.0'
+config-version: 2
+
+profile: 'finsurv'
+
+model-paths: ["models"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  finsurv:
+    staging:
+      +materialized: view
+      +schema: silver
+    marts:
+      +materialized: table
+      +schema: gold
+    quarantine:
+      +materialized: table
+      +schema: quarantine

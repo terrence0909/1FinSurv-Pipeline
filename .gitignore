@@ -25,3 +25,4 @@ Thumbs.db
 venv/
 legacy/logs/
 logs/
+dbt/profiles.yml
