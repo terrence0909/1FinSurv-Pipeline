@@ -24,3 +24,4 @@ Thumbs.db
 *.pem
 venv/
 legacy/logs/
+logs/
