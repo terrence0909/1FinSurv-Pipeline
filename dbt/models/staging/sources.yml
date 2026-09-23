@@ -1,0 +1,25 @@
+version: 2
+
+sources:
+  - name: silver
+    database: finsurv
+    schema: silver
+    description: "Silver layer — validated transactions from the Spark pipeline"
+    tables:
+      - name: finsurv_validated
+        description: "Validated cross-border transactions (Bronze parsed + ADA validated)"
+        columns:
+          - name: swift_uetr
+            description: "Unique SWIFT UETR for the transaction"
+            tests:
+              - unique
+              - not_null
+          - name: ledger_tx_hash
+            description: "Blockchain transaction hash"
+            tests:
+              - unique
+              - not_null
+          - name: amount_zar
+            description: "Transaction amount converted to ZAR"
+            tests:
+              - not_null
