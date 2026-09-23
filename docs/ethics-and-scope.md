@@ -44,6 +44,20 @@ The `generate_transactions.py` script produces **synthetic transactions**. Bank 
 
 ---
 
+### On the AML layer
+
+The sanctions, structuring, and velocity rules in this pipeline are **demonstrations**. They illustrate the *type* of signals an AML monitoring system would produce. A production AML system would also cover:
+
+- Real sanctions lists from OFAC, EU, UN, and FIC (updated daily)
+- Full KYC on originators and beneficiaries (not just hashed wallets)
+- Network analysis and linked-account detection
+- Case management and SAR/STR filing workflows
+- Coverage under FICA, not just SARB Exchange Control
+
+This project does not implement those. It demonstrates the data engineering patterns that would support them.
+
+---
+
 ## Data handling
 
 - Real on-chain data (Ethereum) is **public by nature**. No privacy concern.

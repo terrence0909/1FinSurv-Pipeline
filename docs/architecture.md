@@ -12,6 +12,7 @@ This document defines the v2 data architecture on Azure. It is the evolution of 
 4. **Move transformations into dbt.** Validation and reporting logic become version-controlled SQL.
 5. **Preserve multi-source ingestion.** Mock and Etherscan both feed the same Bronze table.
 6. **Run on Azure.** Databricks + ADLS Gen2 + Unity Catalog + Event Hubs. The stack SA banks use.
+7. **Extend into AML signals.** Cross-border payments are a high-risk AML typology. The pipeline flags three AML patterns in addition to FinSurv rules: sanctions hits, structuring patterns, and velocity anomalies. These are additive to FinSurv validation, not a replacement for a full AML system.
 
 ---
 
@@ -163,6 +164,29 @@ The v1 view `vw_finsurv_submission_payload` becomes a **dbt model** named `finsu
 | `test_currency_approved` | Every currency is in `ref_currency_codes` |
 | `test_unique_uetr` | `swift_uetr` is unique across Silver |
 | `test_unique_hash` | `ledger_tx_hash` is unique across Silver |
+
+---
+
+## AML signal layer
+
+Beyond FinSurv validation, the pipeline flags three AML patterns on the same Silver-layer transactions. These are not a full AML system — they are demonstrations of the patterns a bank's AML monitoring would look for.
+
+### Rules
+
+| Rule | `failure_rule` value | Trigger |
+|---|---|---|
+| Sanctions hit | `SANCTIONS_HIT` | Originator or beneficiary wallet on `ref_sanctioned_wallets` |
+| Structuring | `STRUCTURING_PATTERN` | Multiple sub-threshold payments by same originator within 7 days |
+| Velocity anomaly | `VELOCITY_ANOMALY` | Originator's 24h volume exceeds 5x their 30-day average |
+
+### Reference tables
+
+- `ref_sanctioned_wallets` — wallet addresses on OFAC, EU, UN, and FIC lists
+- `ref_pep_entities` — politically exposed persons (future)
+
+### Gold model
+
+- `fct_aml_alerts` — one row per AML flag, joinable to `fct_compliance_events`
 
 ---
 
